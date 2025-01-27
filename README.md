@@ -71,38 +71,36 @@ The provided code is a Discord bot integrated with Telegram, designed to manage 
    cd path/to/your/project/directory
 
 ---
-## Step 3: Install Required Libraries
-Install the necessary libraries using pip:
+### Step 3: Install Required Libraries
 
-bash
-Копировать
-Редактировать
+Install the necessary libraries using `pip`:
+
+```bash
 pip install discord.py aiogram python-dotenv
-Step 4: Set Up Your Bot
-Create a new Python file (e.g., bot.py) in your project directory and copy the bot code into this file.
-Configure tokens and IDs:
-Replace placeholders in the code with your actual Discord and Telegram bot tokens.
-Include any channel or role IDs specific to your server.
-Run your bot:
-bash
-Копировать
-Редактировать
-python bot.py
-Step 5: Managing Your Environment
-Deactivate the virtual environment when done:
-bash
-Копировать
-Редактировать
-deactivate
-Create a requirements.txt file for sharing or replicating the environment:
-bash
-Копировать
-Редактировать
-pip freeze > requirements.txt
-This setup allows you to manage dependencies for your Discord bot effectively, ensuring it runs smoothly in its own isolated environment.
+```
 
-vbnet
-Копировать
-Редактировать
+---
 
-This version is optimized for readability on GitHub while preserving key information.
+## Step 4: Set Up Your Bot
+
+1. Create a new Python file (e.g., `bot.py`) in your project directory and copy the bot code into this file.
+2. Configure tokens and IDs:
+   - Replace placeholders in the code with your actual **Discord** and **Telegram** bot tokens.
+   - Include any channel or role IDs specific to your server.
+3. Run your bot:
+   ```bash
+   python bot.py
+   ```
+
+   ---
+
+## Step 5: Managing Your Environment
+
+1. Deactivate the virtual environment when done:
+   ```bash
+   deactivate
+   ```
+2. Create a requirements.txt file for sharing or replicating the environment:
+   ```
+   pip freeze > requirements.txt
+   ```
