@@ -46,6 +46,8 @@ On macOS or Linux, use Terminal.
 Navigate to your project directory:
 Use the cd command to change to the directory where you want to create your bot:
 bash
+
+
 cd path/to/your/project/directory
 Create a virtual environment:
 Run the following command:
@@ -60,7 +62,7 @@ bash
 source venv/bin/activate
 Step 3: Install Required Libraries
 With the virtual environment activated, install the necessary libraries using pip:
-bash
+bash  
 pip install discord.py aiogram python-dotenv
 Step 4: Set Up Your Bot
 Create a new Python file (e.g., bot.py) in your project directory and copy the bot code into this file.
