@@ -1,740 +1,691 @@
-import logging
-import re
-from datetime import datetime
-import asyncio
-from venv import logger
 import discord
-from discord.ext import commands
-from discord.errors import HTTPException
-from aiogram import Bot as TelegramBot, Dispatcher
-from aiogram.types import Message
+from discord.ext import commands, tasks
+from pymongo import MongoClient
+from datetime import datetime, timezone
+import re
+import os
+import logging
+from dotenv import load_dotenv
 
-# Загрузка токенов из переменных окружения
-DISCORD_TOKEN = "you_discord_token"
-TELEGRAM_TOKEN = 'you_telegram_token'
+load_dotenv()
 
+# Конфигурация
+TOKEN = os.getenv('DISCORD_TOKEN')
+MONGO_URI = os.getenv('MONGO_URI')
+DB_NAME = os.getenv('DB_NAME')
+VIP_CHANNEL_ID = os.getenv('VIP_CHANNEL_ID')
+CLAN_VIP_CHANNEL_ID = os.getenv('CLAN_VIP_CHANNEL_ID')
+CLAN_CREATION_CHANNEL_ID = os.getenv('CLAN_CREATION_CHANNEL_ID')
+STATS_CHANNEL_ID = os.getenv('STATS_CHANNEL_ID')
+WEBSITE_URL = os.getenv('WEBSITE_URL')
+CLAN_WEBSITE_URL = os.getenv('CLAN_WEBSITE_URL')
+CFG_FILES_PATH = os.getenv('CFG_FILES_PATH')
+VIP_ROLE = os.getenv('VIP_ROLE')
+ENTRY_REGEX = os.getenv('ENTRY_REGEX')
+YOUR_GUILD_ID = os.getenv('YOUR_GUILD_ID')
 
-# Константы
-AFK_CHANNEL_NAME = "AFK"
-CREATE_CHANNEL_NAME = "Создать канал"
-VOICE_CHANNELS_CATEGORY_NAME = "Голосовые каналы"
-NEW_MEMBER_ROLE_NAME = "Гость сообщества"  # Название роли для новых участников
-WARNED_ROLE_NAME = "Предупрежден"  # Название роли, которая выдается при предупреждении
-VACATION_ROLE_NAME = "Отпуск"  # Название роли для отпуска
-ALLOWED_ROLES = []
-CHECKED_ROLES = []
-INSTRUCTOR_ROLE_NAME = []
-LLOWED_ROLES = []
-last_message = None
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("MongoDBLogger")
 
-# Логирование
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
+# Подключение к базе данных
+client = MongoClient(MONGO_URI)
+db = client[DB_NAME]
+users = db.users
+clans = db.clans
+usertemp = db.usertemp
+clantemp = db.clantemp
+squadjs = db.Player
 
-# Настройка intents
+# Подключение к базе данных
+try:
+    client = MongoClient(MONGO_URI)
+    logger.info("Подключено к MongoDB")
+
+    # Получаем базу данных
+    db = client[DB_NAME]
+
+    # Проверяем доступные коллекции
+    collections = db.list_collection_names()
+    logger.info(f"Доступные коллекции: {collections}")
+
+except Exception as e:
+    logger.error(f"Ошибка подключения к MongoDB: {e}")
+
+# Настройки бота
 intents = discord.Intents.default()
-intents.voice_states = True
-intents.guilds = True
-intents.members = True
-intents.messages = True
 intents.message_content = True
-
-# Discord bot
+intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Telegram bot
-telegram_bot = TelegramBot(token=TELEGRAM_TOKEN)
-dispatcher = Dispatcher()
 
-# Данные об отпусках
-vacation_data = {}
-
-
-# Логирование в Discord канал
-class DiscordLogHandler(logging.Handler):
-    def __init__(self, channel):
-        super().__init__()
-        self.channel = channel
-
-    async def send_log(self, message):
+async def update_config_file(steam_id):
+    """Обновление конфигурационного файла"""
+    for file_path in CFG_FILES_PATH:
         try:
-            await self.channel.send(message)
-        except HTTPException as e:
-            if e.status == 429:
-                retry_after = int(e.retry_after)
-                await asyncio.sleep(retry_after)
-                await self.channel.send(message)
+            if not os.path.exists(file_path):
+                print(f"Файл не найден: {file_path}")
+                continue
 
-    def emit(self, record):
-        msg = self.format(record)
-        asyncio.create_task(self.send_log(msg))
+            with open(file_path, 'r') as cfg_file:
+                lines = cfg_file.readlines()
+
+            with open(file_path, 'w') as cfg_file:
+                for line in lines:
+                    if steam_id not in line:
+                        cfg_file.write(line)
+            print(f"Удалена запись VIP для {steam_id}")
+            return True
+        except Exception as e:
+            print(f"Ошибка при удалении из cfg: {e}")
+            return False
 
 
+async def add_vip_to_cfg(steam_id):
+    """Добавление Steam ID в cfg файлы (только новые записи)"""
+    for file_path in CFG_FILES_PATH:
+        try:
+            if not os.path.exists(file_path):
+                print(f"Файл не найден: {file_path}")
+                continue
 
-# Замените на ваш ID каналов
-LOG_CHANNEL_ID = 'you id chanel'
-VACATION_CHANNEL_ID = 'you id chanel'
-CHANNEL_ID = 'you id chanel'
-YOUR_GUILD_ID = 'you id chanel'
-ALLOWED_CHANNEL_ID = 'you id chanel'
-CHANNEL_ID_ROLL = 'you id chanel'
-CHECKED_CHANNEL_ID = 'you id chanel'
-DISALLOWED_GUILDS = 'you id chanel'
-DISCORD_CHANNEL_ID_TG = "you id chanel"
-TELEGRAM_CHAT_ID = 'you id chanel TG'
+            with open(file_path, 'r') as cfg_file:
+                lines = cfg_file.readlines()
+
+            # Проверяем, существует ли запись
+            existing_entry = any(re.match(ENTRY_REGEX, line) and steam_id in line for line in lines)
+
+            if not existing_entry:
+                with open(file_path, 'a') as cfg_file:
+                    today = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+                    cfg_file.write(f"\nAdmin={steam_id}:VIP // {today}")
+                    print(f"Добавлена новая запись для {steam_id} в {file_path}")
+            else:
+                print(f"Запись для {steam_id} уже существует в {file_path}")
+        except Exception as e:
+            print(f"Ошибка при обновлении файла {file_path}: {e}")
+
+
+# Кнопки для VIP
+class VIPButtons(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        # self.add_item(discord.ui.Button(
+        #     label="Получить VIP",
+        #     style=discord.ButtonStyle.link,
+        #     url=WEBSITE_URL
+        # ))
+        self.add_item(SteamIDButton())  # Кнопка привязки Steam ID
+
+    # @discord.ui.button(label="Проверить VIP статус", style=discord.ButtonStyle.blurple)
+    # async def check_vip(self, interaction: discord.Interaction, button: discord.ui.Button):
+    #     user = users.find_one({"discord_id": interaction.user.id})
+
+    #     response = []
+    #     if user and user.get("vip_end"):
+    #         end_date = user["vip_end"].strftime("%Y-%m-%d %H:%M")
+    #         response.append(f"✅ Личный VIP активен до: {end_date}")
+
+    #     await interaction.response.send_message(
+    #         "\n".join(response) if response else "❌ VIP статус не активирован",
+    #         ephemeral=True
+    #     )
+
+
+class VIPButtonsClan(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(discord.ui.Button(
+            label="Клановый VIP",
+            style=discord.ButtonStyle.link,
+            url=CLAN_WEBSITE_URL
+        ))
+        self.add_item(SteamIDButton())  # Кнопка привязки Steam ID
+
+    @discord.ui.button(label="Проверить VIP статус", style=discord.ButtonStyle.blurple)
+    async def check_vip(self, interaction: discord.Interaction, button: discord.ui.Button):
+        clan_vip = clans.find_one({"members.discord_id": interaction.user.id, "vip_end": {"$exists": True}})
+
+        response = []
+
+        if clan_vip:
+            end_date = clan_vip["vip_end"].strftime("%Y-%m-%d %H:%M")
+            response.append(f"✅ Клановый VIP активен до: {end_date} (Клан: {clan_vip['name']})")
+
+        await interaction.response.send_message(
+            "\n".join(response) if response else "❌ VIP статус не активированы",
+            ephemeral=True
+        )
+
+
+@tasks.loop(hours=24)
+async def check_vip_expiration():
+    now = datetime.now(timezone.utc)
+
+    # Проверка обычных пользователей
+    expired_users = users.find({"vip_end": {"$lt": now}})
+    for user in expired_users:
+        await update_config_file(user["steam_id"])
+        users.update_one({"_id": user["_id"]}, {"$set": {"vip_end": None}})
+        print(f"У пользователя {user['discord_name']} истек VIP статус.")
+
+    # Проверка кланов
+    expired_clans = clans.find({"vip_end": {"$lt": now}})
+    for clan in expired_clans:
+        for member in clan["members"]:
+            await update_config_file(member["steam_id"])
+        clans.update_one({"_id": clan["_id"]}, {"$set": {"vip_end": None}})
+        print(f"У клана {clan['name']} истек VIP статус.")
+
+
+@tasks.loop(seconds=10)
+async def monitor_payment_status():
+    """
+    Мониторинг изменений в статусе оплаты пользователей и кланов.
+    Сравнивает коллекции `users` и `usertemp`, а также `clans` и `clantemp`.
+    Если флаг оплаты изменился на True, обновляет файлы конфигурации,
+    выдает роли VIP, а также обновляет временные коллекции.
+    """
+    guild = bot.get_guild(YOUR_GUILD_ID)  # Замените на ID вашего сервера
+
+    # Проверка изменений в коллекции users
+    for user in users.find():
+        temp_user = usertemp.find_one({"discord_id": user["discord_id"]})
+
+        # Если статус оплаты изменился на True
+        if user["payment_status"] and (not temp_user or not temp_user["payment_status"]):
+            steam_id = user.get("steam_id")
+            discord_id = user.get("discord_id")
+
+            if steam_id:
+                # Обновляем файлы конфигурации
+                await add_vip_to_cfg(steam_id)
+
+            if discord_id:
+                # Выдаем роль VIP
+                member = await guild.fetch_member(discord_id)
+                vip_role = discord.utils.get(guild.roles, name=VIP_ROLE)
+                if vip_role and member:
+                    await member.add_roles(vip_role)
+                    print(f"Роль VIP выдана пользователю {member.display_name}.")
+
+            # Обновляем временную коллекцию usertemp
+            usertemp.update_one(
+                {"discord_id": user["discord_id"]},
+                {"$set": {"payment_status": True}},
+                upsert=True
+            )
+
+    # Проверка изменений в коллекции clans
+    for clan in clans.find():
+        temp_clan = clantemp.find_one({"name": clan["name"]})
+
+        # Если статус оплаты изменился на True
+        if clan.get("vip_status") and (not temp_clan or not temp_clan.get("vip_status")):
+            role_id = clan.get("role_id")
+            role = guild.get_role(role_id)
+
+            if role:
+                print(f"VIP статус активирован для клана {clan['name']}.")
+
+            # Обновляем временную коллекцию clantemp
+            clantemp.update_one(
+                {"name": clan["name"]},
+                {"$set": {"vip_status": True}},
+                upsert=True
+            )
+
+    # Добавление роли при добавлении участника в клан
+    for clan in clans.find():
+        for member in clan.get("members", []):
+            discord_id = member.get("discord_id")
+            role_id = clan.get("role_id")
+
+            if discord_id and role_id:
+                member_obj = await guild.fetch_member(discord_id)
+                role = guild.get_role(role_id)
+
+                if role and member_obj and role not in member_obj.roles:
+                    await member_obj.add_roles(role)
+                    print(f"Роль '{role.name}' выдана пользователю {member_obj.display_name}.")
+
+
+async def add_steam_id_to_user(discord_id, steam_id):
+    """Добавляет Steam ID в коллекцию users на основе Discord ID."""
+    users.update_one(
+        {"discord_id": discord_id},
+        {"$set": {"steam_id": steam_id}},
+        upsert=True
+    )
+
+    usertemp.update_one(
+        {"discord_id": discord_id},
+        {"$set": {"steam_id": steam_id}},
+        upsert=True
+    )
+
+
+async def remove_vip_from_cfg(steam_id):
+    try:
+        for file_path in CFG_FILES_PATH:
+            if not os.path.exists(file_path):
+                print(f"Файл не найден: {file_path}")
+                continue
+
+            with open(file_path, 'r') as cfg_file:
+                lines = cfg_file.readlines()
+
+            with open(file_path, 'w') as cfg_file:
+                for line in lines:
+                    if steam_id not in line:
+                        cfg_file.write(line)
+                print(f"Удалена запись VIP для {steam_id}")
+        return True
+    except Exception as e:
+        print(f"Ошибка при удалении из cfg: {e}")
+        return False
+
+
+# Кнопка для привязки Steam ID
+class SteamIDButton(discord.ui.Button):
+    def __init__(self):
+        # Устанавливаем параметры кнопки
+        super().__init__(label="Привязать Steam ID", style=discord.ButtonStyle.green, custom_id="bind_steam_id")
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(SteamIDModal())
+
+
+# Модальное окно для Steam ID
+class SteamIDModal(discord.ui.Modal):
+    def __init__(self):
+        super().__init__(title="Привязка Steam ID")
+        self.steam_id = discord.ui.TextInput(label="Введите ваш Steam ID",
+                                             placeholder="76561198000000000", max_length=17)
+        self.add_item(self.steam_id)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        steam_id = self.steam_id.value
+        if not re.match(r"^7656119\d{10}$", steam_id):
+            await interaction.response.send_message("❌ Неверный формат Steam ID!", ephemeral=True)
+            return
+
+        # Сохраняем Steam ID
+        users.update_one(
+            {"discord_id": interaction.user.id},
+            {"$set": {
+                "steam_id": steam_id,
+                "discord_name": interaction.user.display_name,
+                "vip_end": None,
+                "payment_status": False
+            }},
+            upsert=True
+        )
+
+        usertemp.update_one(
+            {"discord_id": interaction.user.id},
+            {"$set": {
+                "steam_id": steam_id,
+                "discord_name": interaction.user.display_name,
+                "vip_end": None,
+                "payment_status": False
+            }},
+            upsert=True
+        )
+
+        await interaction.response.send_message(f"✅ Steam ID {steam_id} привязан!", ephemeral=True)
+        return
+
+
+# Кнопка для создания клана
+class ClanCreationView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(SteamIDButton())  # Добавляем кнопку SteamIDButton
+
+    @discord.ui.button(label="Создать клан", style=discord.ButtonStyle.green, custom_id="create_clan_button")
+    async def create_clan(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ClanCreationModal())
+
+
+# Модальное окно для создания клана
+class ClanCreationModal(discord.ui.Modal):
+    def __init__(self):
+        super().__init__(title="Создание клана")
+        self.clan_name = discord.ui.TextInput(label="Название клана", placeholder="Введите название", max_length=50)
+        self.add_item(self.clan_name)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        user_data = users.find_one({"discord_id": interaction.user.id})
+        if not user_data or "steam_id" not in user_data:
+            await interaction.response.send_message("❌ Сначала привяжите Steam ID!", ephemeral=True)
+            return
+
+        clan_name = self.clan_name.value
+
+        if clans.find_one({"name": clan_name}):
+            await interaction.response.send_message("❌ Клан с таким названием уже существует!", ephemeral=True)
+            return
+
+        role = await interaction.guild.create_role(name=clan_name, color=discord.Color.random())
+
+        clan_data = {
+            "name": clan_name,
+            "leader": {"discord_id": interaction.user.id, "discord_name": interaction.user.display_name,
+                       "steam_id": user_data["steam_id"]},
+            "members": [{"discord_id": interaction.user.id, "discord_name": interaction.user.display_name,
+                         "steam_id": user_data["steam_id"]}],
+            "vip_members": [{"discord_id": interaction.user.id, "discord_name": interaction.user.display_name,
+                             "steam_id": user_data["steam_id"]}],
+            "role_id": role.id,
+            "created_at": datetime.now(timezone.utc),
+        }
+        clantemp = {
+            "name": clan_name,
+            "leader": {"discord_id": interaction.user.id, "discord_name": interaction.user.display_name,
+                       "steam_id": user_data["steam_id"]},
+            "members": [{"discord_id": interaction.user.id, "discord_name": interaction.user.display_name,
+                         "steam_id": user_data["steam_id"]}],
+            "vip_members": [{"discord_id": interaction.user.id, "discord_name": interaction.user.display_name,
+                             "steam_id": user_data["steam_id"]}],
+            "role_id": role.id,
+            "created_at": datetime.now(timezone.utc),
+        }
+
+        clans.insert_one(clan_data)
+        await interaction.user.add_roles(role)
+        await interaction.response.send_message(f"✅ Клан '{clan_name}' создан!", ephemeral=True)
+
+
+class ClanManagementView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+        self.add_item(discord.ui.Button(
+            label="Проверить VIP статус",
+            style=discord.ButtonStyle.blurple,
+            custom_id="check_vip_status"
+        ))
+
+
+@bot.event
+async def on_interaction(interaction: discord.Interaction):
+    if interaction.data.get('custom_id') == "check_vip_status":
+        clan = clans.find_one({"leader.discord_id": interaction.user.id})
+
+        if not clan or "vip_end" not in clan:
+            await interaction.response.send_message("❌ Клан не имеет активного VIP.", ephemeral=True)
+        else:
+            end_date = clan["vip_end"].strftime("%Y-%m-%d %H:%M")
+            await interaction.response.send_message(f"✅ Клановый VIP активен до: {end_date}", ephemeral=True)
+
+
+# Команда для добавления участника в клан
+@bot.tree.command(name="add_clan_member", description="Добавить участника в клан")
+async def add_clan_member(interaction: discord.Interaction, member: discord.Member):
+    clan = clans.find_one({"leader.discord_id": interaction.user.id})
+    if interaction.channel.id != CLAN_CREATION_CHANNEL_ID:
+        await interaction.response.send_message(
+            f"❌ Эту команду можно использовать только в канале <#{CLAN_CREATION_CHANNEL_ID}>!", ephemeral=True)
+        return
+
+    if not clan:
+        await interaction.response.send_message("❌ Вы не лидер клана!", ephemeral=True)
+        return
+
+    user_data = users.find_one({"discord_id": member.id})
+    if not user_data:
+        await interaction.response.send_message("❌ Пользователь не привязал Steam ID!", ephemeral=True)
+        return
+
+    clans.update_one(
+        {"name": clan["name"]},
+        {"$push": {"members": {
+            "discord_id": member.id,
+            "discord_name": member.display_name,
+            "steam_id": user_data.get("steam_id", "Не привязан")
+        }}}
+    )
+    clantemp.update_one(
+        {"name": clan["name"]},
+        {"$push": {"members": {
+            "discord_id": member.id,
+            "discord_name": member.display_name,
+            "steam_id": user_data.get("steam_id", "Не привязан")
+        }}}
+    )
+
+    # Выдаем роль клана
+    role = interaction.guild.get_role(clan["role_id"])
+    await member.add_roles(role)
+
+    await interaction.response.send_message(f"✅ {member.display_name} добавлен в клан!", ephemeral=True)
+
+
+@bot.tree.command(name="add_clan_vip", description="Добавить участника в список VIP игроков клана")
+async def add_clan_vip(interaction: discord.Interaction, member: discord.Member):
+    clan = clans.find_one({"leader.discord_id": interaction.user.id})
+    if interaction.channel.id != CLAN_CREATION_CHANNEL_ID:
+        await interaction.response.send_message(
+            f"❌ Эту команду можно использовать только в канале <#{CLAN_CREATION_CHANNEL_ID}>!", ephemeral=True)
+        return
+
+    if not clan:
+        await interaction.response.send_message("❌ Вы не лидер клана!", ephemeral=True)
+        return
+
+    user_data = users.find_one({"discord_id": member.id})
+    if not user_data or not user_data.get("steam_id"):
+        await interaction.response.send_message("❌ Пользователь не привязал Steam ID!", ephemeral=True)
+        return
+
+    clans.update_one(
+        {"name": clan["name"]},
+        {"$addToSet": {"vip_members": {
+            "discord_id": member.id,
+            "discord_name": member.display_name,
+            "steam_id": user_data["steam_id"]
+        }}}
+    )
+    clantemp.update_one(
+        {"name": clan["name"]},
+        {"$addToSet": {"vip_members": {
+            "discord_id": member.id,
+            "discord_name": member.display_name,
+            "steam_id": user_data["steam_id"]
+        }}}
+    )
+
+    # Добавляем запись только если ее нет
+    await add_vip_to_cfg(user_data["steam_id"])
+
+    await interaction.response.send_message(f"✅ {member.display_name} добавлен в VIP участников клана!", ephemeral=True)
+
+
+# @bot.tree.command(name="delete_vip_members", description="Удалить участника из списка VIP игроков клана")
+# async def delete_vip_members(interaction: discord.Interaction, member: discord.Member):
+#     clan = clans.find_one({"leader.discord_id": interaction.user.id})
+# if interaction.channel.id != CLAN_CREATION_CHANNEL_ID:
+#         await interaction.response.send_message(f"❌ Эту команду можно использовать только в канале <#{CLAN_CREATION_CHANNEL_ID}>!", ephemeral=True)
+#         return
+
+#     if not clan:
+#         await interaction.response.send_message("❌ Вы не лидер клана!", ephemeral=True)
+#         return
+#
+#     clans.update_one(
+#         {"name": clan["name"]},
+#         {"$pull": {"vip_members": {"discord_id": member.id}}}
+#     )
+#
+#     clantemp.update_one(
+#         {"name": clan["name"]},
+#         {"$pull": {"vip_members": {"discord_id": member.id}}}
+#     )
+#
+#     user_data = users.find_one({"discord_id": member.id})
+#     if user_data and user_data.get("steam_id"):
+#         await update_config_file(user_data["steam_id"])
+#
+#     await interaction.response.send_message(f"✅ {member.display_name} удален из VIP участников клана!", ephemeral=True)
+
+
+@bot.tree.command(name="members", description="Вывести состав клана")
+async def members(interaction: discord.Interaction):
+    if interaction.channel.id != CLAN_CREATION_CHANNEL_ID:
+        await interaction.response.send_message(
+            f"❌ Эту команду можно использовать только в канале <#{CLAN_CREATION_CHANNEL_ID}>!", ephemeral=True)
+        return
+
+    clan = clans.find_one({"leader.discord_id": interaction.user.id})
+    if not clan:
+        await interaction.response.send_message("❌ Вы не лидер клана!", ephemeral=True)
+        return
+
+    members_list = "\n".join([f"- {member['discord_name']}" for member in clan["members"]])
+    await interaction.response.send_message(f"Состав клана:\n{members_list}", ephemeral=True)
+
+
+@bot.tree.command(name="members_vip", description="Вывести список VIP участников клана")
+async def members_vip(interaction: discord.Interaction):
+    clan = clans.find_one({"leader.discord_id": interaction.user.id})
+    if interaction.channel.id != CLAN_CREATION_CHANNEL_ID:
+        await interaction.response.send_message(
+            f"❌ Эту команду можно использовать только в канале <#{CLAN_CREATION_CHANNEL_ID}>!", ephemeral=True)
+        return
+
+    if not clan or not clan.get("vip_members"):
+        await interaction.response.send_message("❌ В вашем клане нет VIP участников.", ephemeral=True)
+        return
+
+    vip_list = "\n".join([f"- {vip['discord_name']}" for vip in clan["vip_members"]])
+    await interaction.response.send_message(f"VIP участники:\n{vip_list}", ephemeral=True)
+
+
+@bot.tree.command(name="delete_player_clan", description="Удалить участника из клана")
+async def delete_player_from_clan(interaction: discord.Interaction, member: discord.Member):
+    clan = clans.find_one({"leader.discord_id": interaction.user.id})
+    if interaction.channel.id != CLAN_CREATION_CHANNEL_ID:
+        await interaction.response.send_message(
+            f"❌ Эту команду можно использовать только в канале <#{CLAN_CREATION_CHANNEL_ID}>!", ephemeral=True)
+        return
+
+    if not clan:
+        await interaction.response.send_message("❌ Вы не лидер клана!", ephemeral=True)
+        return
+
+    member_data = next((m for m in clan["members"] if m["discord_id"] == member.id), None)
+
+    if not member_data:
+        await interaction.response.send_message("❌ Этот пользователь не найден в клане.", ephemeral=True)
+        return
+
+    # Проверка наличия в vip_members
+    if any(vip["discord_id"] == member.id for vip in clan.get("vip_members", [])):
+        clans.update_one(
+            {"name": clan["name"]},
+            {"$pull": {"vip_members": {"discord_id": member.id}}}
+        )
+        await update_config_file(member_data.get("steam_id", ""))  # Удаление из CFG
+
+    clans.update_one(
+        {"name": clan["name"]},
+        {"$pull": {"members": {"discord_id": member.id}}}
+    )
+
+    role = interaction.guild.get_role(clan["role_id"])
+    try:
+        await member.remove_roles(role)
+    except discord.errors.Forbidden:
+        await interaction.response.send_message("❌ У бота недостаточно прав для удаления роли.", ephemeral=True)
+        return
+    except Exception as e:
+        print(f"Ошибка при удалении роли: {e}")
+        await interaction.response.send_message("❌ Произошла ошибка при удалении роли.", ephemeral=True)
+        return
+
+    await interaction.response.send_message(f"✅ {member.display_name} удален из клана!", ephemeral=True)
+
+
+@bot.tree.command(name="stats", description="Показать статистику игрока")
+async def stats(interaction: discord.Interaction, steam_id: str):
+    # Проверка наличия определенной роли у пользователя
+    required_role_name = VIP_ROLE
+    user_roles = [role.name for role in interaction.user.roles]
+
+    if required_role_name not in user_roles:
+        await interaction.response.send_message("❌ У вас нет доступа к этой команде. Требуется роль VIP.",
+                                                ephemeral=True)
+        return
+
+    # Получение статистики из базы данных
+    player_stats = squadjs.find_one({"_id": steam_id})  # Используем squadjs
+
+    if not player_stats:
+        await interaction.response.send_message("❌ Игрок не найден.", ephemeral=True)
+        return
+
+    # Вычисление любимой роли и оружия
+    favorite_role = max(player_stats["roles"].items(), key=lambda x: x[1], default=("Нет данных", 0))
+    favorite_weapon = max(player_stats["weapons"].items(), key=lambda x: x[1], default=("Нет данных", 0))
+
+    # Формирование сообщения со статистикой
+    stats_message = (
+        f"Никнейм: {player_stats['name']}\n"
+        f"Убийств: {player_stats['kills']}\n"
+        f"Смерти: {player_stats['death']}\n"
+        f"КД: {player_stats['kd']}\n"
+        f"Кол-во матчей: {player_stats['matches']['matches']}\n"
+        f"Винрейт: {player_stats['matches']['winrate']}%\n"
+        f"Любимая роль: {favorite_role[0]} ({favorite_role[1]})\n"
+        f"Тимкилл: {player_stats['teamkills']}\n"
+        f"Любимое оружие: {favorite_weapon[0]} ({favorite_weapon[1]})"
+    )
+
+    stats_embed = discord.Embed(
+        title=f"Статистика игрока {player_stats['name']}",
+        color=discord.Color.blue())
+
+    stats_embed.add_field(name="Убийства", value=player_stats['kills'], inline=True)
+    stats_embed.add_field(name="Смерти", value=player_stats['death'], inline=True)
+    stats_embed.add_field(name="К/Д", value=player_stats['kd'], inline=False)
+    stats_embed.add_field(name="Тимкиллы", value=player_stats['teamkills'])
+    stats_embed.add_field(name="Количество матчей", value={player_stats['matches']['matches']}, inline=False)
+    stats_embed.add_field(name="Винрейт", value=f"{player_stats['matches']['winrate']}%", inline=False)
+    stats_embed.add_field(name="Любимая роль", value=f"{favorite_role[0]} ({favorite_role[1]})")
+    stats_embed.add_field(name="Любимое оружие", value=f"{favorite_weapon[0]} ({favorite_weapon[1]})")
+    stats_embed.set_footer(text='ZAVOD', icon_url='https://imgur.com/gPFMQFs.png')
+
+    # Отправка сообщения пользователю
+    await interaction.response.send_message(embed=stats_embed, ephemeral=False)
 
 
 @bot.event
 async def on_ready():
+    print(f"Бот {bot.user.name} готов к работе!")
+
+    # Запускаем задачи
+    check_vip_expiration.start()
+    monitor_payment_status.start()
+
+    # Синхронизация команд
     try:
-        await bot.tree.sync()
-        logging.info(f'Бот {bot.user.name} успешно запущен!')
+        synced = await bot.tree.sync()
+        print(f"Синхронизировано {len(synced)} команд")
     except Exception as e:
-        logging.error(f'Ошибка синхронизации команд: {e}')
+        print(f"Ошибка синхронизации команд: {e}")
 
-class MyView(discord.ui.View):
-    """
-    A Discord UI view for managing vacation requests.
+    # Отправка кнопок в каналы
+    vip_channel = bot.get_channel(VIP_CHANNEL_ID)
+    if vip_channel:
+        await vip_channel.send("Привязка Steam ID и проверка VIP:", view=VIPButtons())
 
-    This view allows authorized users to confirm, decline, or remove vacation roles from a specified user.
-    
-    Attributes:
-        user (discord.Member): The user requesting the vacation.
-        reason (str): The reason for the vacation.
-        end_date (str): The end date of the vacation.
-    """
+    clan_vip_channel = bot.get_channel(CLAN_VIP_CHANNEL_ID)
+    if clan_vip_channel:
+        await clan_vip_channel.send("Привязка Steam ID и проверка кланового VIP:", view=VIPButtonsClan())
 
-    def __init__(self, user: discord.Member, reason: str, end_date: str, timeout=None):
-        """
-        Initializes the MyView instance.
+    clan_creation_channel = bot.get_channel(CLAN_CREATION_CHANNEL_ID)
+    if clan_creation_channel:
+        await clan_creation_channel.send("Создание клана:", view=ClanCreationView())
 
-        Args:
-            user (discord.Member): The user requesting the vacation.
-            reason (str): The reason for the vacation.
-            end_date (str): The end date of the vacation.
-            timeout (float, optional): The time in seconds before the view times out. Defaults to None.
-        """
-        super().__init__(timeout=timeout)
-        self.user = user
-        self.reason = reason
-        self.end_date = end_date
 
-    async def is_allowed_to_manage(self, interaction: discord.Interaction) -> bool:
-        """
-        Checks if the user has permission to manage the vacation request.
-
-        Args:
-            interaction (discord.Interaction): The interaction that triggered this check.
-
-        Returns:
-            bool: True if allowed to manage, False otherwise.
-        """
-        if interaction.user == self.user:
-            await interaction.response.send_message("You cannot manage your own vacation.", ephemeral=True)
-            return False
-
-        allowed_roles = [discord.utils.get(interaction.guild.roles, name=role_name) for role_name in ALLOWED_ROLES]
-        user_roles = set(interaction.user.roles)
-
-        if not any(role in user_roles for role in allowed_roles):
-            await interaction.response.send_message("You do not have permission to manage this vacation request.", ephemeral=True)
-            return False
-
-        return True
-
-    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.green)
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """
-        Confirms the vacation request and adds the vacation role to the user.
-
-        Args:
-            interaction (discord.Interaction): The interaction that triggered this button click.
-            button (discord.ui.Button): The button that was clicked.
-        """
-        if not await self.is_allowed_to_manage(interaction):
-            return
-
-        guild = interaction.guild
-        vacation_role = discord.utils.get(guild.roles, name=VACATION_ROLE_NAME)
-        
-        if not vacation_role:
-            await interaction.response.send_message(">>> Error: Vacation role not found. Please create it.")
-            return
-
-        try:
-            await self.user.add_roles(vacation_role)
-            confirmation_message = (
-                f">>> Vacation for reason '{self.reason}' until {self.end_date} confirmed. "
-                f"Role '{VACATION_ROLE_NAME}' added for {self.user.mention}."
-            )
-            await interaction.channel.send(confirmation_message)
-            logging.info(f">>> Role '{VACATION_ROLE_NAME}' added to user {self.user} for vacation.")
-
-            # Disable buttons "Confirm" and "Decline"
-            self.confirm.disabled = True
-            self.decline.disabled = True
-            await interaction.response.edit_message(view=self)
-        except Exception as e:
-            await interaction.response.send_message("Error while adding vacation role.")
-            logging.error(f">>> Error adding role '{VACATION_ROLE_NAME}' to user {self.user}: {e}")
-
-    @discord.ui.button(label="Decline", style=discord.ButtonStyle.red)
-    async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """
-        Declines the vacation request.
-
-        Args:
-            interaction (discord.Interaction): The interaction that triggered this button click.
-            button (discord.ui.Button): The button that was clicked.
-        """
-        if not await self.is_allowed_to_manage(interaction):
-            return
-
-        await interaction.response.send_message("Vacation has been declined.")
-        logging.info(f">>> Vacation request from user {self.user} has been declined.")
-
-        # Disable buttons "Confirm" and "Decline"
-        self.confirm.disabled = True
-        self.decline.disabled = True
-        await interaction.response.edit_message(view=self)
-
-    @discord.ui.button(label="Remove Early", style=discord.ButtonStyle.blurple)
-    async def remove(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """
-        Removes the vacation role from the user early.
-
-        Args:
-            interaction (discord.Interaction): The interaction that triggered this button click.
-            button (discord.ui.Button): The button that was clicked.
-        """
-        if not await self.is_allowed_to_manage(interaction):
-            return
-
-        guild = interaction.guild
-        vacation_role = discord.utils.get(guild.roles, name=VACATION_ROLE_NAME)
-        
-        if not vacation_role or vacation_role not in self.user.roles:
-            await interaction.response.send_message(f">>> Role '{VACATION_ROLE_NAME}' not found or not assigned.")
-            return
-
-        try:
-            await self.user.remove_roles(vacation_role)
-            await interaction.response.send_message(">>> Vacation role removed early.")
-            logging.info(f">>> Role '{VACATION_ROLE_NAME}' removed from user {self.user} early.")
-            await interaction.response.edit_message(view=self)
-        except Exception as e:
-            await interaction.response.send_message(">>> Error while removing vacation role.", ephemeral=True)
-            logging.error(f">>> Error removing role '{VACATION_ROLE_NAME}' from user {self.user}: {e}")
-
-@bot.event
-async def on_member_join(member):
-    """
-    Handles the event when a member joins the server.
-
-    This function checks if the guild (server) is in a list of disallowed guilds.
-    If not, it logs the member's name and attempts to assign them the "Гость сообщества" (Community Guest) role.
-    
-    Args:
-        member (discord.Member): The member who has joined the server.
-    
-    Behavior:
-        - If the guild ID is in DISALLOWED_GUILDS, the function returns immediately.
-        - Logs the joining of the member.
-        - Tries to find the role named "Гость сообщества".
-        - If the role is found, it attempts to add this role to the new member.
-        - If successful, logs that the role was added.
-        - Catches exceptions:
-            - `discord.Forbidden`: Logs a warning if there are insufficient permissions to add the role.
-            - `discord.HTTPException`: Logs an error if there is an HTTP error when trying to add the role.
-    """
-    
-    if member.guild.id in DISALLOWED_GUILDS:
-        return
-
-    logging.info(f"{member.name} присоединился к серверу.")
-
-    # Получаем роль "Гость сообщества"
-    role = discord.utils.get(member.guild.roles, name="Гость сообщества")
-
-    # Проверка наличия роли на сервере
-    if role is None:
-        logging.warning(f"Роль 'Гость сообщества' не найдена на сервере.")
-        return
-
-    # Добавление роли новому участнику
-    try:
-        await member.add_roles(role)
-        logging.info(f"Добавлена роль 'Гость сообщества' участнику {member.name}")
-    except discord.Forbidden:
-        logging.warning(f"Нет прав на добавление роли 'Гость сообщества' участнику {member.name}.")
-    except discord.HTTPException as e:
-        logging.error(f"Ошибка при добавлении роли 'Гость сообщества' участнику {member.name}: {e}")
-
-@bot.tree.command(name="отпуск", description="Запросить отпуск с указанием причины и даты окончания.")
-async def vacation(interaction: discord.Interaction, reason: str, end_date: str):
-    """
-    Handles the vacation request command.
-
-    This command allows users to request vacation time by providing a reason and an end date.
-    The command is only available in a specific channel defined by VACATION_CHANNEL_ID.
-    
-    Args:
-        interaction (discord.Interaction): The interaction object representing the command invocation.
-        reason (str): The reason for the vacation request.
-        end_date (str): The end date of the vacation in the format 'дд.мм.гг' or 'дд.мм.гггг'.
-
-    Behavior:
-        - Checks if the command is invoked in the correct channel. If not, sends an ephemeral message and exits.
-        - Validates the format of the provided end date using a regular expression.
-        - Attempts to convert the provided end date string into a datetime object:
-            - Supports both two-digit and four-digit year formats.
-            - If conversion fails, sends an error message about the date format.
-        - Constructs a vacation request message that includes:
-            - The user who requested the vacation.
-            - The specified end date.
-            - The reason for the vacation.
-        - Sends the constructed vacation request message to the channel.
-        - Stores the user's vacation data in a dictionary for further processing.
-
-    Raises:
-        ValueError: If there is an error in converting the date string to a datetime object.
-    """
-    
-    if interaction.channel_id != VACATION_CHANNEL_ID:
-        await interaction.response.send_message("Эта команда доступна только в определённом канале.", ephemeral=True)
-        return
-
-    # Проверка формата даты
-    if not re.match(r'^\d{1,2}\.\d{1,2}\.(\d{2}|\d{4})$', end_date):
-        await interaction.response.send_message("Неверный формат даты. Используйте дд.мм.гг или дд.мм.гггг.", ephemeral=True)
-        return
-
-    try:
-        end_date_obj = datetime.strptime(end_date, '%d.%m.%Y') if len(end_date.split('.')[-1]) == 4 else datetime.strptime(end_date, '%d.%m.%y')
-    except ValueError:
-        await interaction.response.send_message("Ошибка преобразования даты. Проверьте формат.", ephemeral=True)
-        return
-
-    vacation_request = (
-        f"Заявка на отпуск\n"
-        f"Участник: {interaction.user.mention}\n"
-        f"До: {end_date}\n"
-        f"Причина: {reason}\n"
-    )
-    
-    await interaction.channel.send(vacation_request)
-    vacation_data[interaction.user.id] = end_date
-
-@bot.tree.command(name="warn", description="Предупредить пользователя")
-async def warn(interaction: discord.Interaction, user: discord.Member, *, reason: str):
-    """
-    Issues a warning to a specified user.
-
-    This command allows authorized users to warn a member of the server by assigning them a warning role
-    and sending a message indicating the reason for the warning.
-    
-    Args:
-        interaction (discord.Interaction): The interaction object representing the command invocation.
-        user (discord.Member): The member to be warned.
-        reason (str): The reason for issuing the warning.
-
-    Behavior:
-        - Checks if the command is invoked in an allowed channel defined by ALLOWED_CHANNEL_ID.
-        - Validates that the invoking user has one of the allowed roles defined in ALLOWED_ROLES.
-        - Retrieves or creates a role named WARNED_ROLE_NAME for issuing warnings.
-        - Adds the warning role to the specified user and sends a confirmation message.
-        - Logs the warning action with details.
-        - Automatically removes the warning role after 30 days and notifies the user.
-
-    Raises:
-        discord.Forbidden: If the bot lacks permission to add roles.
-        discord.HTTPException: If there is an error while adding roles or creating roles.
-    """
-    
-    # Проверка канала
-    if interaction.channel_id != ALLOWED_CHANNEL_ID:
-        await interaction.response.send_message("Эта команда доступна только в определённом канале.", ephemeral=True)
-        return
-
-    # Проверка ролей
-    member = interaction.guild.get_member(interaction.user.id)
-    if not any(role.name in ALLOWED_ROLES for role in member.roles):
-        await interaction.response.send_message("У вас нет прав для использования этой команды.", ephemeral=True)
-        return
-
-    # Получение роли предупреждения
-    warned_role = discord.utils.get(interaction.guild.roles, name=WARNED_ROLE_NAME)
-    if not warned_role:
-        warned_role = await interaction.guild.create_role(name=WARNED_ROLE_NAME)
-
-    # Добавление роли предупреждения пользователю
-    await user.add_roles(warned_role)
-    await interaction.response.send_message(f">>> Пользователь {user.mention} был предупрежден за:\n**{reason}**")
-    logging.info(f"{user.name} был предупрежден за: {reason}")
-
-    # Автоматическое снятие предупреждения через 30 дней
-    await asyncio.sleep(30 * 24 * 60 * 60)  # 30 дней в секундах
-    if warned_role in user.roles:
-        await user.remove_roles(warned_role)
-        logging.info(f"Роль '{warned_role.name}' была удалена у пользователя {user.name} через 30 дней.")
-        await user.send(f"Ваше предупреждение отменено через 30 дней.")
-
-@bot.tree.command(name="unwarn", description="Снять предупреждение с пользователя")
-async def unwarn(interaction: discord.Interaction, user: discord.Member):
-    """
-    Removes a warning from a specified user.
-
-    This command allows authorized users to remove a warning role from a member of the server,
-    effectively lifting their warning status.
-
-    Args:
-        interaction (discord.Interaction): The interaction object representing the command invocation.
-        user (discord.Member): The member whose warning is to be removed.
-
-    Behavior:
-        - Checks if the command is invoked in an allowed channel defined by ALLOWED_CHANNEL_ID.
-        - Validates that the invoking user has one of the allowed roles defined in ALLOWED_ROLES.
-        - Attempts to remove the warning role from the specified user and sends a confirmation message.
-        - Logs the action of removing the warning.
-    
-    Raises:
-        discord.Forbidden: If the bot lacks permission to remove roles.
-        discord.HTTPException: If there is an error while removing roles.
-    """
-    
-    # Проверка канала
-    if interaction.channel_id != ALLOWED_CHANNEL_ID:
-        await interaction.response.send_message("Эта команда доступна только в определённом канале.", ephemeral=True)
-        return
-
-    # Проверка ролей
-    member = interaction.guild.get_member(interaction.user.id)
-    if not any(role.name in ALLOWED_ROLES for role in member.roles):
-        await interaction.response.send_message("У вас нет прав для использования этой команды.", ephemeral=True)
-        return
-
-    # Снятие роли предупреждения
-    warned_role = discord.utils.get(interaction.guild.roles, name=WARNED_ROLE_NAME)
-    if warned_role in user.roles:
-        await user.remove_roles(warned_role)
-        await interaction.response.send_message(f">>> С пользователя {user.mention} снято предупреждение.")
-        logging.info(f"С пользователя {user.name} снято предупреждение.")
-    else:
-        await interaction.response.send_message(f"У пользователя {user.mention} нет активного предупреждения.")
-
-@bot.event
-async def on_voice_state_update(member, before, after):
-    """
-    Handles updates to a member's voice state in the guild.
-
-    This event is triggered whenever a member joins, leaves, or moves between voice channels.
-
-    Args:
-        member (discord.Member): The member whose voice state has changed.
-        before (discord.VoiceState): The voice state before the change.
-        after (discord.VoiceState): The voice state after the change.
-
-    Behavior:
-        - Checks if the bot has permission to manage channels. If not, logs a warning and exits.
-        - Logs the member's name and their voice channel transition.
-        - If the member joins a channel named 'Создать канал' (Create Channel):
-            - Checks if a channel with the member's display name already exists in that category.
-            - If not, creates a new voice channel with the member's display name and moves the member into it.
-        - Deletes empty channels when:
-            - A user leaves a channel.
-            - A user moves from one channel to another.
-            - A channel becomes empty after all members leave (except for specific channels).
-    """
-    
-    # Проверяем права на управление каналами у бота
-    if not member.guild.me.guild_permissions.manage_channels:
-        logging.warning("У бота нет прав на управление каналами.")
-        return
-
-    logging.info(f"{member.name} изменил состояние: {before.channel} -> {after.channel}")
-
-    # Проверка, если пользователь заходит в канал "Создать канал"
-    if after.channel and after.channel.name == CREATE_CHANNEL_NAME:
-        logging.info(f"{member.name} подключился к каналу 'Создать канал'")
-        category = after.channel.category
-        if category is not None:
-            # Проверяем, существует ли уже канал с таким именем
-            existing_channel = discord.utils.get(category.voice_channels, name=f"{member.display_name}")
-            if existing_channel is None:
-                new_channel = await category.create_voice_channel(name=f"{member.display_name}")
-                await member.move_to(new_channel)
-            else:
-                logging.info(f"Канал '{existing_channel.name}' уже существует для {member.name}")
-
-    # Удаляем пустые каналы, кроме канала "Создать канал"
-    if before.channel and before.channel.members == [] and before.channel.name not in {CREATE_CHANNEL_NAME, AFK_CHANNEL_NAME}:
-        await check_and_delete_channel(before.channel)
-
-    # Проверка, если пользователь покидает голосовой канал
-    elif after.channel is None and before.channel is not None:
-        await check_and_delete_channel(before.channel)
-
-    # Проверка, если пользователь перемещается между каналами
-    elif after.channel is not None and before.channel is not None and before.channel != after.channel:
-        await check_and_delete_channel(before.channel)
-
-async def check_and_delete_channel(channel):
-    """
-    Checks if a voice channel is empty and deletes it if it meets certain conditions.
-
-    Args:
-        channel (discord.VoiceChannel): The channel to check for emptiness.
-
-    Behavior:
-        - Verifies that the channel belongs to the specified category and is not a protected channel (e.g., 'Создать канал' or AFK).
-        - If conditions are met, calls delete_channel to remove the channel.
-    """
-    
-    # Проверяем, находится ли канал в категории "Голосовые каналы" и не является ли он каналом "Создать канал" или AFK
-    category = discord.utils.get(channel.guild.categories, name=VOICE_CHANNELS_CATEGORY_NAME)
-    if channel.category == category and len(channel.members) == 0 and channel.name not in {CREATE_CHANNEL_NAME, AFK_CHANNEL_NAME}:
-        await delete_channel(channel)
-
-async def delete_channel(channel):
-    """
-    Deletes a specified voice channel if it is not protected.
-
-    Args:
-        channel (discord.VoiceChannel): The channel to be deleted.
-
-    Behavior:
-        - Checks that the channel is not a protected channel (e.g., AFK or 'Создать канал').
-        - Attempts to delete the channel. Logs success or failure based on the outcome.
-    
-    Raises:
-        discord.Forbidden: If the bot lacks permission to delete the channel.
-        discord.HTTPException: If there is an error during the deletion process.
-    """
-    
-    # Проверка, что канал не является AFK или каналом "Создать канал"
-    if channel.name not in {AFK_CHANNEL_NAME, CREATE_CHANNEL_NAME}:
-        try:
-            await channel.delete()
-            logging.info(f"Удален канал: {channel.name}")
-        except discord.Forbidden:
-            logging.warning(f"Не удалось удалить канал: {channel.name}. Недостаточно прав.")
-        except discord.HTTPException as e:
-            logging.error(f"Ошибка при удалении канала: {channel.name}. Ошибка: {e}")
-    else:
-        logging.info(f"Канал {channel.name} не будет удален.")
-
-@bot.tree.command(name="состав", description="Показывает состав пользователей с определёнными ролями")
-async def состав(interaction: discord.Interaction):
-    """
-    Displays the composition of users with specific roles in the server.
-
-    This command checks if the user has permission to execute it, gathers members with specified roles,
-    and sends an embedded message containing this information to a designated channel.
-
-    Args:
-        interaction (discord.Interaction): The interaction object representing the command invocation.
-
-    Behavior:
-        - Checks if the invoking user has one of the allowed roles defined in ALLOWED_ROLES.
-        - If not, sends an ephemeral message indicating insufficient permissions.
-        - Retrieves the guild (server) where the command was invoked.
-        - Initializes a dictionary to store users grouped by their roles specified in CHECKED_ROLES.
-        - Iterates through all members of the guild to populate this dictionary.
-        - Retrieves the channel defined by CHANNEL_ID_ROLL and checks if it exists.
-        - Constructs an embedded message containing users grouped by their highest role.
-        - Sends this embedded message along with an image file to the specified channel.
-    
-    Raises:
-        discord.NotFound: If the channel or message is not found.
-        discord.HTTPException: If there is an error while sending messages or files.
-    """
-    
-    global last_message
-
-    # Проверка ролей пользователя, запускающего команду
-    user_roles = [role.name for role in interaction.user.roles]
-    if not any(role in ALLOWED_ROLES for role in user_roles):
-        await interaction.response.send_message("У вас нет прав для выполнения этой команды.", ephemeral=True)
-        return
-
-    guild = interaction.guild
-    if not guild:
-        await interaction.response.send_message("Не удалось найти сервер.", ephemeral=True)
-        return
-
-    # Создаём словарь для хранения пользователей по ролям
-    roles_users = {role_name: [] for role_name in CHECKED_ROLES}
-    for member in guild.members:
-        user_roles = [role for role in member.roles if role.name in CHECKED_ROLES]
-        if user_roles:
-            highest_role = max(user_roles, key=lambda r: r.position)
-            roles_users[highest_role.name].append(member.display_name)
-
-    # Получаем канал
-    channel = bot.get_channel(CHANNEL_ID_ROLL)
-    if not channel:
-        await interaction.response.send_message("Канал для отправки сообщения не найден.", ephemeral=True)
-        return
-
-    try:
-        # Создаем общий синий Embed
-        embed = discord.Embed(color=0x0000ff, title="Состав пользователей")  # Синий цвет
-        embed.description = ""  # Инициализация описания
-
-        # Добавляем информацию о каждой роли в общий Embed
-        for role_name, users in roles_users.items():
-            if users:
-                users_list = "\n> ".join(users)
-
-                # Добавляем информацию о роли и пользователях с пробелом между ролями
-                embed.description += f"{role_name}:\n─── ⋆⋅☆⋅⋆ ──\n\n> {users_list}\n─── ⋆⋅☆⋅⋆ ──\n\n"  # Добавляем \n для пробела
-
-        # Путь к изображению (в папке code)
-        image_path = 'Code/a639dcad-1664-4bba-b204-778bb5710a8f копия.jpg'  # Укажите правильный путь к изображению
-
-        # Отправляем общий Embed и изображение в одном сообщении
-        with open(image_path, 'rb') as image_file:
-            await channel.send(embed=embed, file=discord.File(image_file, filename='image.jpg'))
-
-    except discord.NotFound:
-        await interaction.response.send_message("Ошибка: сообщение было удалено.", ephemeral=True)
-    except discord.HTTPException as e:
-        await interaction.response.send_message(f"Ошибка при отправке сообщения: {e}", ephemeral=True)
-
-@bot.tree.command(name="роль", description="Выдать роль участнику")
-async def роль(interaction: discord.Interaction, member: discord.Member, role: discord.Role):
-    """
-    Issues a specified role to a specified member.
-
-    This command allows authorized users to assign roles to members within a specific channel.
-
-    Args:
-        interaction (discord.Interaction): The interaction object representing the command invocation.
-        member (discord.Member): The member to whom the role will be assigned.
-        role (discord.Role): The role to be assigned to the member.
-
-    Behavior:
-        - Checks if the command is invoked in an allowed channel defined by CHECKED_CHANNEL_ID.
-        - Validates that the invoking user has the required instructor role defined by INSTRUCTOR_ROLE_NAME.
-        - Ensures that the specified role is allowed by checking against LLOWED_ROLES.
-        - Checks if the bot has permission to assign the specified role based on its position in the role hierarchy.
-        - Attempts to assign the role to the member and sends a confirmation message upon success.
-        - Handles exceptions related to permissions and HTTP errors, sending appropriate error messages when necessary.
-
-    Raises:
-        discord.Forbidden: If the bot lacks permission to assign roles.
-        discord.HTTPException: If there is an error during the role assignment process.
-    """
-    
-    # Проверка канала
-    if interaction.channel_id != CHECKED_CHANNEL_ID:
-        await interaction.response.send_message("Эта команда доступна только в определённом канале.", ephemeral=True)
-        return
-
-    # Проверка прав пользователя
-    instructor_role = discord.utils.get(interaction.guild.roles, name=INSTRUCTOR_ROLE_NAME)
-    if not any(role.name in INSTRUCTOR_ROLE_NAME for role in interaction.user.roles):
-        await interaction.response.send_message("У вас нет прав для выдачи ролей.", ephemeral=True)
-        return
-
-    # Проверка роли по названию
-    if role.name not in LLOWED_ROLES:
-        await interaction.response.send_message(f"Выдача роли '{role.name}' не разрешена.", ephemeral=True)
-        return
-
-    # Проверка прав бота
-    bot_member = interaction.guild.me
-    if role.position >= bot_member.top_role.position:
-        await interaction.response.send_message("У меня нет прав для выдачи этой роли.", ephemeral=True)
-        return
-
-    try:
-        await member.add_roles(role)
-        await interaction.response.send_message(f'Роль {role.name} выдана {member.mention}.')
-    except discord.Forbidden:
-        await interaction.response.send_message("У меня нет прав для выдачи этой роли.", ephemeral=True)
-    except discord.HTTPException as e:
-        await interaction.response.send_message("Произошла ошибка при выдаче роли.", ephemeral=True)
-
-@bot.event
-async def on_message(message):
-    """
-    Handles incoming messages from Discord and forwards them to Telegram.
-
-    Args:
-        message (discord.Message): The message object representing an incoming message.
-
-    Behavior:
-        - Checks if the message is from a specific channel defined by DISCORD_CHANNEL_ID_TG and is not sent by a bot.
-        - Logs information about the received message.
-        - Forwards non-empty messages to a specified Telegram chat defined by TELEGRAM_CHAT_ID.
-    
-    Raises:
-        Exception: If there is an error while sending messages to Telegram.
-    """
-    
-    logger.info(f"Checking message from Discord - Channel: {message.channel.id} (Expected: {DISCORD_CHANNEL_ID_TG})")
-    
-    if message.channel.id == DISCORD_CHANNEL_ID_TG and not message.author.bot:
-        try:
-            logger.info(f"Received message from Discord: {message.author.name} ({message.author.id}): {message.content}")
-            if message.content.strip():  # If the message is not empty
-                await telegram_bot.send_message(
-                    chat_id=TELEGRAM_CHAT_ID,
-                    text=f'Сообщение из Discord: {message.author.display_name}: {message.content}'
-                )
-                logger.info("Message sent to Telegram successfully.")
-            else:
-                logger.warning(f"Received empty message from Discord from {message.author.name}.")
-                
-        except Exception as e:
-            logger.error(f"Error sending message to Telegram: {e}")
-
-@dispatcher.message()
-async def handle_telegram_message(message: Message):
-    """
-    Handles incoming messages from Telegram and forwards them to Discord.
-
-    Args:
-        message (Message): The incoming Telegram message object.
-
-    Behavior:
-        - Retrieves the designated Discord channel using DISCORD_CHANNEL_ID_TG.
-        - Sends a formatted message containing the sender's name and text content to that Discord channel.
-    
-    Raises:
-        Exception: If there is an error while sending messages to Discord.
-    """
-    
-    discord_channel = bot.get_channel(DISCORD_CHANNEL_ID_TG)
-    
-    if discord_channel:
-        await discord_channel.send(f"Сообщение из Telegram: {message.from_user.full_name}: {message.text}")
-
-async def start_telegram_bot():
-    """
-    Starts polling for incoming messages from Telegram.
-
-    This function initializes polling for new messages using the dispatcher associated with telegram_bot.
-    
-    Raises:
-        Exception: If there is an error while starting polling for Telegram messages.
-    """
-    
-    await dispatcher.start_polling(telegram_bot)
-
-
-# Запуск бота
-async def main():
-    await asyncio.gather(
-        dispatcher.start_polling(telegram_bot),
-        bot.start(DISCORD_TOKEN),
-    )
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except Exception as e:
-        logging.critical(f"Критическая ошибка: {e}")
+bot.run(TOKEN)
