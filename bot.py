@@ -24,6 +24,20 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 STEAM_API_KEY = os.getenv('STEAM_API_KEY')
 MONGO_URI = os.getenv('MONGO_URI')
 
+# Замените на ваш ID каналов
+LOG_CHANNEL_ID = os.getenv('LOG_CHANNEL_ID')
+VACATION_CHANNEL_ID = os.getenv('VACATION_CHANNEL_ID')
+CHANNEL_ID = os.getenv('CHANNEL_ID')
+YOUR_GUILD_ID = os.getenv('YOUR_GUILD_ID')
+ALLOWED_CHANNEL_ID = os.getenv('ALLOWED_CHANNEL_ID')
+CHANNEL_ID_ROLL = os.getenv('CHANNEL_ID_ROLL')
+CHECKED_CHANNEL_ID = os.getenv('CHECKED_CHANNEL_ID')
+DISALLOWED_GUILDS = os.getenv('DISALLOWED_GUILS')
+DISCORD_CHANNEL_ID_TG = os.getenv('DISCORD_CHANNEL_ID_TG')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+ED_CHANNEL_ID = os.getenv('ED_CHANNEL_ID')
+STEAM_CHANNEL_ID = os.getenv('STEAM_CHANNEL_ID')
+
 # Константы
 AFK_CHANNEL_NAME = "AFK"
 CREATE_CHANNEL_NAME = "Создать канал"
@@ -89,20 +103,6 @@ class DiscordLogHandler(logging.Handler):
     def emit(self, record):
         msg = self.format(record)
         asyncio.create_task(self.send_log(msg))
-
-# Замените на ваш ID канала для логов
-LOG_CHANNEL_ID = None
-VACATION_CHANNEL_ID = 1326597358124798033
-CHANNEL_ID = 1301915115825664063
-YOUR_GUILD_ID = 1326576621326700546
-ALLOWED_CHANNEL_ID = 1301661484652433530
-CHANNEL_ID_ROLL = 1326595024665837640
-CHECKED_CHANNEL_ID = 1326822624176767027
-DISALLOWED_GUILDS = 1326576621326700546
-DISCORD_CHANNEL_ID_TG = None
-TELEGRAM_CHAT_ID = None
-ED_CHANNEL_ID = 123456789012345678
-STEAM_CHANNEL_ID = 1352730026134470746
 
 class MyView(discord.ui.View):
     def __init__(self, user: discord.Member, reason: str, end_date: str, timeout=None):
